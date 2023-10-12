@@ -1,0 +1,125 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  FRONTEND_IMAGE_NAME: gallery3fe
+  BACKEND_IMAGE_NAME: gallery3be
+
+jobs:
+  display-vars:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Display variables
+        run: |
+          echo "REACT_APP_AUTH0_DOMAIN=${{ vars.REACT_APP_AUTH0_DOMAIN }}"
+          echo "REACT_APP_AUTH0_CLIENT_ID=${{ vars.REACT_APP_AUTH0_CLIENT_ID }}"
+          echo "REACT_APP_API_ENDPOINT=${{ vars.REACT_APP_API_ENDPOINT }}"
+  publish-frontend:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build image
+        run: |
+          docker build . \
+            --file Dockerfile \
+            --tag $FRONTEND_IMAGE_NAME \
+            --build-arg REACT_APP_AUTH0_DOMAIN="${{ vars.REACT_APP_AUTH0_DOMAIN }}" \
+            --build-arg REACT_APP_AUTH0_CLIENT_ID="${{ vars.REACT_APP_AUTH0_CLIENT_ID }}" \
+            --build-arg REACT_APP_API_ENDPOINT="${{ vars.REACT_APP_API_ENDPOINT }}" \
+            --build-arg REACT_APP_AUTH0_AUD="${{ vars.REACT_APP_AUTH0_AUD }}" \
+      - name: Log into GitHub Container Registry
+        run: echo "${{ secrets.CR_PAT }}" | docker login https://ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Push image to GitHub Container Registry
+        run: |
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$FRONTEND_IMAGE_NAME
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          [ "$VERSION" == "main" ] && VERSION=latest
+          echo IMAGE_ID=$IMAGE_ID
+          echo VERSION=$VERSION
+          docker tag $FRONTEND_IMAGE_NAME $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:$VERSION
+
+  publish-backend:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build image
+        run: |
+          docker build . \
+            --file Dockerfile \
+            --tag $BACKEND_IMAGE_NAME \
+            --build-arg MONGO_URI="${{ vars.MONGO_URI }}" \
+            --build-arg REDIS_HOST="${{ vars.REDIS_HOST }}" \
+            --build-arg FRONTEND_ENDPOINT="${{ vars.FRONTEND_ENDPOINT }}" \
+            --build-arg SERVER_PORT="${{ vars.SERVER_PORT }}" \
+            --build-arg S3_ACCESS_KEY="${{ vars.S3_ACCESS_KEY }}" \
+            --build-arg S3_SECRET_ACCESS_KEY="${{ secrets.S3_SECRET_ACCESS_KEY }}" \
+            --build-arg S3_BUCKET_REGION="${{ vars.S3_BUCKET_REGION }}" \
+            --build-arg S3_BUCKET_NAME="${{ vars.S3_BUCKET_NAME }}" \
+            --build-arg STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}" \
+            --build-arg STRIPE_ENDPOINT_SK="${{ secrets.STRIPE_ENDPOINT_SK }}" \
+            --build-arg OPENAI_KEY="${{ secrets.OPENAI_KEY }}" \
+            --build-arg REACT_APP_AUTH0_DOMAIN="${{ vars.REACT_APP_AUTH0_DOMAIN }}" \
+            --build-arg SENDGRID_API_KEY="${{ secrets.SENDGRID_API_KEY }}" \
+            --build-arg AUTH0_TENANT="${{ vars.AUTH0_TENANT }}" \
+            --build-arg SESSION_SECRET="${{ secrets.SESSION_SECRET }}" \
+            --build-arg REACT_APP_AUTH0_AUD="${{ vars.REACT_APP_AUTH0_AUD }}" \
+            --build-arg AUTH0_BASE_URL="${{ vars.AUTH0_BASE_URL }}" \
+            --build-arg AUTH0_JWKS_URI="${{ vars.AUTH0_JWKS_URI }}" \
+            --build-arg TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}" \
+            --build-arg TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}" \
+            --build-arg TWILIO_PHONE_NUMBER="${{ vars.TWILIO_PHONE_NUMBER }}"
+
+      - name: Log into GitHub Container Registry
+        run: echo "${{ secrets.CR_PAT }}" | docker login https://ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Push image to GitHub Container Registry
+        run: |
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$BACKEND_IMAGE_NAME
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          [ "$VERSION" == "main" ] && VERSION=latest
+          echo IMAGE_ID=$IMAGE_ID
+          echo VERSION=$VERSION
+          docker tag $BACKEND_IMAGE_NAME $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:$VERSION
+
+      # then run docker login https://ghcr.io -u <your github username> --password-stdin
+      - name: Log into GitHub Container Registry
+        run: echo "${{ secrets.CR_PAT }}" | docker login https://ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # then run docker pull ghcr.io/${{ github.repository_owner }}/frontend-<your github username>
+
+  deploy-lightsail:
+    runs-on: ubuntu-latest
+    needs: [publish-frontend, publish-backend]
+    steps:
+      - name: SSH & Deploy
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_AWS_SERVER_IP }}
+          username: ${{ secrets.SSH_SERVER_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            echo "${{ secrets.CR_PAT }}" |
+            docker login https://ghcr.io -u ${{ github.actor }} --password-stdin &&
+            cd ~/letsencrypt-docker-compose &&
+            docker compose pull frontend &&
+            docker compose pull backend &&
+            docker compose build &&
+            docker compose up -d &&
+            docker compose exec --no-TTY nginx nginx -s reload

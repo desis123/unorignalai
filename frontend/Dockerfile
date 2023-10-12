@@ -1,0 +1,35 @@
+FROM --platform=linux/amd64 node:16 AS build
+
+WORKDIR /src
+ENV PATH /src/node_modules/.bin:$PATH
+COPY package.json ./
+COPY package-lock.json ./
+RUN npm install -g npm@9.6.2
+RUN npm ci
+COPY . ./
+
+ARG REACT_APP_AUTH0_DOMAIN
+ENV REACT_APP_AUTH0_DOMAIN $REACT_APP_AUTH0_DOMAIN
+
+ARG REACT_APP_AUTH0_CLIENT_ID
+ENV REACT_APP_AUTH0_CLIENT_ID $REACT_APP_AUTH0_CLIENT_ID
+
+ARG REACT_APP_AUTH0_AUD
+ENV REACT_APP_AUTH0_AUD $REACT_APP_AUTH0_AUD
+
+ARG REACT_APP_API_ENDPOINT
+ENV REACT_APP_API_ENDPOINT $REACT_APP_API_ENDPOINT
+
+RUN echo "REACT_APP_AUTH0_DOMAIN: $REACT_APP_AUTH0_DOMAIN"
+RUN echo "REACT_APP_AUTH0_CLIENT_ID: $REACT_APP_AUTH0_CLIENT_ID"
+RUN echo "REACT_APP_API_ENDPOINT: $REACT_APP_API_ENDPOINT"
+
+
+RUN npm run build
+
+# Serve these static files with NGINX.
+FROM nginx:1.21.6-alpine
+COPY --from=build /src/dist /usr/share/nginx/html
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
